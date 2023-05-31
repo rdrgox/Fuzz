@@ -15,6 +15,11 @@ namespace CustomFuzzer
             return "\u001b[34m" + text + "\u001b[0m";
         }
 
+        public static string ConsoleGreen(string text)
+        {
+            return "\u001b[32m" + text + "\u001b[0m";
+        }
+
         static async Task Main(string[] args)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
@@ -72,9 +77,7 @@ namespace CustomFuzzer
 
                     if (response.IsSuccessStatusCode)
                     {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("{0,-30} {1}{2,-20}", keyword, "Status: ", (int)response.StatusCode);
-                        Console.ResetColor();
+                        Console.WriteLine("{0,-30} {1}{2,-20}", keyword, "Status: ", ConsoleGreen(((int)response.StatusCode).ToString()));
                     }
                     else
                     {
