@@ -1,12 +1,10 @@
 ﻿using System.Diagnostics;
 
-class Program
+public class Program
 {
     private static bool isRunning = true;
     private static readonly object progressLock = new object();
-    
-    public static string ConsoleBlue(string text) => "\u001b[34m" + text + "\u001b[0m";
-    public static string ConsoleGreen(string text) => "\u001b[32m" + text + "\u001b[0m";
+    static int LastProgressLine => Console.WindowHeight - 1;
     
     static async Task Main(string[] args)
     {
@@ -21,7 +19,7 @@ class Program
                 case "-u":
                     if (i + 1 < args.Length) url = args[++i];
                     break;
-                case "-d":
+                case "-w":
                     if (i + 1 < args.Length) dictionaryPath = args[++i];
                     break;
                 case "-t":
@@ -56,14 +54,29 @@ class Program
             return;
         }
 
-        string[] keywords = await File.ReadAllLinesAsync(dictionaryPath);
-        int[] errorCodes = { 200, 204, 301, 302, 307, 401 };
-
-        int total = keywords.Length;
-        int processed = 0;
-        int progressBarLine = Console.CursorTop + 1;
+        string[] keywords = (await File.ReadAllLinesAsync(dictionaryPath))
+            .Where(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("#"))
+            .ToArray();
         
-        Console.WriteLine();
+        string[] extensions = {
+            "", ".bak", ".old", ".backup", ".orig", ".tmp", ".save",
+            ".log", ".txt", ".out",
+            ".zip", ".tar", ".tar.gz", ".rar", ".7z",
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg",
+            ".php", ".asp", ".aspx", ".jsp", ".js", ".html", ".css",
+            ".sql", ".db", ".sqlite", ".sqlite3",
+            ".conf", ".ini", ".env", ".yml", ".yaml", ".json", ".xml"
+        };
+        
+        var keywordVariants = keywords
+            .SelectMany(kw => extensions.Select(ext => kw + ext))
+            .Distinct()
+            .ToArray();
+        
+        int[] errorCodes = { 200, 204, 301, 302, 307, 401 };
+        int total = keywordVariants.Length;
+        int processed = 0;
         
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (sender, e) =>
@@ -72,9 +85,11 @@ class Program
             isRunning = false;
             cts.Cancel();
         };
-
+        
+        DrawProgressBar(0, total, 30, LastProgressLine);
+        
         using HttpClient client = new HttpClient();
-
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
         Stopwatch stopwatch = new Stopwatch();
         stopwatch.Start();
 
@@ -86,8 +101,10 @@ class Program
         async (keyword, token) =>
         {
             if (!isRunning) return;
-
+            
             string testUrl = url!.TrimEnd('/') + "/" + keyword;
+            string? resultLine = null;
+            
             try
             {
                 HttpResponseMessage response = await client.GetAsync(testUrl, token);
@@ -95,36 +112,33 @@ class Program
 
                 if (response.IsSuccessStatusCode)
                 {
-                    lock (progressLock)
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("{0,-30} {1}{2,-20}", keyword, "Status: ", ConsoleGreen(statusCode.ToString()));
-                        Console.WriteLine();
-                    }
+                    Console.Write($"{keyword,-30} ");
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"Status: {statusCode}");
+                    Console.ResetColor();
                 }
                 else if (Array.IndexOf(errorCodes, statusCode) != -1 && statusCode != 404)
                 {
-                    lock (progressLock)
-                    {
-                        Console.WriteLine();
-                        Console.WriteLine("{0,-30} {1,-10}", keyword, $"Status: {statusCode}");
-                        Console.WriteLine();
-                    }
+                    resultLine = $"{keyword,-30} Status: {statusCode}";
                 }
             }
             catch (OperationCanceledException) { /* ctrl+c */ }
             catch (HttpRequestException ex)
             {
-                lock (progressLock)
-                {
-                    Console.WriteLine($"Error al acceder a {testUrl}: {ex.Message}");
-                }
+                resultLine = $"Error al acceder a {testUrl}: {ex.Message}";
             }
             
             int current = Interlocked.Increment(ref processed);
+            
             lock (progressLock)
             {
-                DrawProgressBar(current, total, 30);
+                if (resultLine != null)
+                {
+                    Console.SetCursorPosition(0, Console.CursorTop);
+                    Console.WriteLine(resultLine);
+                }
+                
+                DrawProgressBar(current, total, 30, LastProgressLine);
             }
         });
 
@@ -139,10 +153,10 @@ class Program
     static void ShowHelp()
     {
         Console.WriteLine("Uso:");
-        Console.WriteLine("  ejemplo.exe -u <url> -d <diccionario> [-t <tareas>]");
+        Console.WriteLine("  ejemplo.exe -u <url> -w <wordlist> -t <tareas>");
         Console.WriteLine("Opciones:");
         Console.WriteLine("  -u     URL objetivo para fuzzing");
-        Console.WriteLine("  -d     Ruta del archivo de diccionario");
+        Console.WriteLine("  -w     Ruta del archivo de diccionario");
         Console.WriteLine("  -t     Número de tareas paralelas (por defecto: 10)");
         Console.WriteLine("  -h     Muestra este mensaje de ayuda");
         Console.WriteLine();
@@ -155,23 +169,27 @@ class Program
         Console.WriteLine("dotnet FUZZ");
         Console.ResetColor();
         Console.WriteLine("================================================");
-        Console.WriteLine("v0.2\n");
+        Console.WriteLine("v1.1\n");
         
         Console.ForegroundColor = ConsoleColor.Blue;
-        Console.WriteLine($"[+] URL:      {url}");
-        Console.WriteLine($"[+] Threads:  {threads}");
-        Console.WriteLine($"[+] Wordlist: {wordlist}");
-        Console.ResetColor();
+        Console.WriteLine($"[+] {"URL:",-10} {url}");
+        Console.WriteLine($"[+] {"Threads:",-10} {threads}");
+        Console.WriteLine($"[+] {"Wordlist:",-10} {wordlist}");
         Console.WriteLine();
+        Console.ResetColor();
     }
     
-    static void DrawProgressBar(int current, int total, int barSize)
+    static void DrawProgressBar(int current, int total, int barSize, int progressLine)
     {
         double percent = (double)current / total;
         int filled = (int)(percent * barSize);
         string bar = "[" + new string('#', filled) + new string('-', barSize - filled) + "]";
-        
-        Console.Write($"\r{bar} {percent * 100:0.0}% ({current}/{total})     ");
+        string status = $"{bar} {percent * 100:0.0}% ({current}/{total})";
+
+        int currentLine = Console.CursorTop;
+        Console.SetCursorPosition(0, progressLine);
+        Console.Write(status.PadRight(Console.WindowWidth - 1));
+        Console.SetCursorPosition(0, currentLine);
     }
 }
 
