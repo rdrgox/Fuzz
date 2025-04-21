@@ -8,3 +8,4 @@ secret
 secrets
 index
 index.html
+teams
