@@ -1,9 +1,12 @@
 ﻿using System.Diagnostics;
 
-public class Program
+namespace Fuzz;
+
+public static class Program
 {
-    private static bool isRunning = true;
-    private static readonly object progressLock = new object();
+    const string Version = "v1.4";
+    private static bool _isRunning = true;
+    private static readonly object ProgressLock = new object();
     static int LastProgressLine => Console.WindowHeight - 1;
     
     static async Task Main(string[] args)
@@ -11,6 +14,7 @@ public class Program
         string? url = null;
         string? dictionaryPath = null;
         int parallelTasks = 10;
+        string? extensionsInput = null;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -29,6 +33,10 @@ public class Program
                         i++;
                     }
                     break;
+                case "-x":
+                    if (i + 1 < args.Length)
+                        extensionsInput = args[++i];
+                    break;
                 case "-h":
                     ShowHelp();
                     return;
@@ -46,7 +54,7 @@ public class Program
             return;
         }
 
-        ShowBanner(url, parallelTasks, dictionaryPath);
+        ShowBanner(url, parallelTasks, dictionaryPath, extensionsInput);
 
         if (!File.Exists(dictionaryPath))
         {
@@ -58,31 +66,34 @@ public class Program
             .Where(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith("#"))
             .ToArray();
         
-        string[] extensions = {
-            "", ".bak", ".old", ".backup", ".orig", ".tmp", ".save",
-            ".log", ".txt", ".out",
-            ".zip", ".tar", ".tar.gz", ".rar", ".7z",
-            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg",
-            ".php", ".asp", ".aspx", ".jsp", ".js", ".html", ".css",
-            ".sql", ".db", ".sqlite", ".sqlite3",
-            ".conf", ".ini", ".env", ".yml", ".yaml", ".json", ".xml"
-        };
         
-        var keywordVariants = keywords
-            .SelectMany(kw => extensions.Select(ext => kw + ext))
-            .Distinct()
-            .ToArray();
+        string[] keywordVariants;
+
+        if (!string.IsNullOrEmpty(extensionsInput))
+        {
+            string[] extensions = extensionsInput.Split(',')
+                .Select(ext => ext.StartsWith('.') ? ext : "." + ext.Trim())
+                .ToArray();
+
+            keywordVariants = keywords
+                .SelectMany(kw => new[] { kw }.Concat(extensions.Select(ext => kw + ext)))
+                .Distinct()
+                .ToArray();
+        }
+        else
+        {
+            keywordVariants = keywords;
+        }
         
         int[] errorCodes = { 200, 204, 301, 302, 307, 401 };
         int total = keywordVariants.Length;
         int processed = 0;
         
         using var cts = new CancellationTokenSource();
-        Console.CancelKeyPress += (sender, e) =>
+        Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;
-            isRunning = false;
+            _isRunning = false;
             cts.Cancel();
         };
         
@@ -93,54 +104,54 @@ public class Program
         Stopwatch stopwatch = new Stopwatch();
         stopwatch.Start();
 
-        await Parallel.ForEachAsync(keywords, new ParallelOptions
-        {
-            MaxDegreeOfParallelism = parallelTasks,
-            CancellationToken = cts.Token
-        },
-        async (keyword, token) =>
-        {
-            if (!isRunning) return;
-            
-            string testUrl = url!.TrimEnd('/') + "/" + keyword;
-            string? resultLine = null;
-            
-            try
+        await Parallel.ForEachAsync(keywordVariants, new ParallelOptions
             {
-                HttpResponseMessage response = await client.GetAsync(testUrl, token);
-                int statusCode = (int)response.StatusCode;
+                MaxDegreeOfParallelism = parallelTasks,
+                CancellationToken = cts.Token
+            },
+            async (keyword, token) =>
+            {
+                if (!_isRunning) return;
+            
+                string testUrl = url.TrimEnd('/') + "/" + keyword;
+                string? resultLine = null;
+            
+                try
+                {
+                    HttpResponseMessage response = await client.GetAsync(testUrl, token);
+                    int statusCode = (int)response.StatusCode;
 
-                if (response.IsSuccessStatusCode)
-                {
-                    Console.Write($"{keyword,-30} ");
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"Status: {statusCode}");
-                    Console.ResetColor();
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Console.Write($"{keyword,-30} ");
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Status: {statusCode}");
+                        Console.ResetColor();
+                    }
+                    else if (Array.IndexOf(errorCodes, statusCode) != -1 && statusCode != 404)
+                    {
+                        resultLine = $"{keyword,-30} Status: {statusCode}";
+                    }
                 }
-                else if (Array.IndexOf(errorCodes, statusCode) != -1 && statusCode != 404)
+                catch (OperationCanceledException) { /* ctrl+c */ }
+                catch (HttpRequestException ex)
                 {
-                    resultLine = $"{keyword,-30} Status: {statusCode}";
+                    resultLine = $"Error al acceder a {testUrl}: {ex.Message}";
                 }
-            }
-            catch (OperationCanceledException) { /* ctrl+c */ }
-            catch (HttpRequestException ex)
-            {
-                resultLine = $"Error al acceder a {testUrl}: {ex.Message}";
-            }
             
-            int current = Interlocked.Increment(ref processed);
+                int current = Interlocked.Increment(ref processed);
             
-            lock (progressLock)
-            {
-                if (resultLine != null)
+                lock (ProgressLock)
                 {
-                    Console.SetCursorPosition(0, Console.CursorTop);
-                    Console.WriteLine(resultLine);
-                }
+                    if (resultLine != null)
+                    {
+                        Console.SetCursorPosition(0, Console.CursorTop);
+                        Console.WriteLine(resultLine);
+                    }
                 
-                DrawProgressBar(current, total, 30, LastProgressLine);
-            }
-        });
+                    DrawProgressBar(current, total, 30, LastProgressLine);
+                }
+            });
 
         stopwatch.Stop();
         
@@ -153,28 +164,33 @@ public class Program
     static void ShowHelp()
     {
         Console.WriteLine("Uso:");
-        Console.WriteLine("  ejemplo.exe -u <url> -w <wordlist> -t <tareas>");
+        Console.WriteLine("  ejemplo.exe -u <url> -w <wordlist> -t <threads> -x <extensions>");
         Console.WriteLine("Opciones:");
         Console.WriteLine("  -u     URL objetivo para fuzzing");
         Console.WriteLine("  -w     Ruta del archivo de diccionario");
         Console.WriteLine("  -t     Número de tareas paralelas (por defecto: 10)");
         Console.WriteLine("  -h     Muestra este mensaje de ayuda");
+        Console.WriteLine("  -x     Extensiones personalizadas separadas por coma (ej: php,html,txt)");
         Console.WriteLine();
     }
     
-    static void ShowBanner(string url, int threads, string wordlist)
+    static void ShowBanner(string url, int threads, string wordlist, string? extensionsInput = null)
     {
         Console.WriteLine("================================================");
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("dotnet FUZZ");
         Console.ResetColor();
         Console.WriteLine("================================================");
-        Console.WriteLine("v1.1\n");
+        Console.WriteLine($"{Version}\n");
         
         Console.ForegroundColor = ConsoleColor.Blue;
         Console.WriteLine($"[+] {"URL:",-10} {url}");
         Console.WriteLine($"[+] {"Threads:",-10} {threads}");
         Console.WriteLine($"[+] {"Wordlist:",-10} {wordlist}");
+        if (!string.IsNullOrEmpty(extensionsInput))
+        {
+            Console.WriteLine($"[+] {"Extensiones:",-10} {extensionsInput}");
+        }
         Console.WriteLine();
         Console.ResetColor();
     }
@@ -192,4 +208,3 @@ public class Program
         Console.SetCursorPosition(0, currentLine);
     }
 }
-
