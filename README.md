@@ -1,6 +1,6 @@
 # dotnetfuzz
 
-**dotnetfuzz** Es una herramienta desarrollada en C# para realizar Fuzzing de directorios y archivos en aplicaciones Web. la cual permite detectar recurssos accesibles mediante solicitudes HTTP.
+**dotnetfuzz** Es una herramienta desarrollada en C# para realizar Fuzzing de directorios y archivos en aplicaciones Web. la cual permite detectar recursos accesibles mediante solicitudes HTTP.
 
 
 ## Uso
